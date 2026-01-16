@@ -21,15 +21,23 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <csignal>
 #include "memory_injector.h"
 #include "anti_detect.h"
+#include "patch_manager.h"
 
 // 保存原始 argv 用于伪装
 static int g_argc = 0;
 static char** g_argv = nullptr;
+static volatile bool g_running = true;
+
+void signal_handler(int sig) {
+    g_running = false;
+    printf("\n[*] 收到信号 %d，正在退出...\n", sig);
+}
 
 void print_usage(const char* prog) {
-    printf("proc-mem-inject v2.0 - 运行时内存注入 (反检测增强版)\n\n");
+    printf("proc-mem-inject v2.1 - 运行时内存注入 (反检测增强版)\n\n");
     printf("用法:\n");
     printf("  %s -k <root_key> -p <pid> [操作] [选项]\n\n", prog);
     printf("操作:\n");
@@ -38,7 +46,9 @@ void print_usage(const char* prog) {
     printf("  --write <addr> -d <hex>   写入内存 (hex格式如: 1F2003D5)\n");
     printf("  --inject -c <file>        注入 shellcode 文件\n");
     printf("  --hook <addr> -c <file>   在指定地址安装 hook\n");
-    printf("  --find <module>           查找模块基址\n\n");
+    printf("  --find <module>           查找模块基址\n");
+    printf("  --batch <config>          批量应用 patch 配置文件\n");
+    printf("  --monitor <config>        监控模式：检测还原并自动重新 patch\n\n");
     printf("反检测选项:\n");
     printf("  --stealth                 启用全部反检测 (默认)\n");
     printf("  --no-stealth              禁用反检测\n");
@@ -46,12 +56,12 @@ void print_usage(const char* prog) {
     printf("  --chunk <size>            设置分块大小 (默认 64)\n");
     printf("  --fake-name <name>        伪装进程名 (默认 kworker/0:0)\n\n");
     printf("示例:\n");
-    printf("  # 查看内存映射 (带反检测)\n");
-    printf("  %s -k \"key\" -p 1234 --maps\n\n", prog);
-    printf("  # 写入 NOP (禁用反检测，更快)\n");
-    printf("  %s -k \"key\" -p 1234 --no-stealth --write 0x7000001000 -d 1F2003D5\n\n", prog);
-    printf("  # 自定义延迟和进程名\n");
-    printf("  %s -k \"key\" -p 1234 --delay 50 2000 --fake-name \"system_server\" --maps\n", prog);
+    printf("  # 批量应用 patch\n");
+    printf("  %s -k \"key\" -p 1234 --batch /data/local/tmp/wzry.patch\n\n", prog);
+    printf("  # 监控模式 (Ctrl+C 退出)\n");
+    printf("  %s -k \"key\" -p 1234 --monitor /data/local/tmp/wzry.patch\n\n", prog);
+    printf("  # 查看内存映射\n");
+    printf("  %s -k \"key\" -p 1234 --maps\n", prog);
 }
 
 // 十六进制字符串转字节
@@ -132,6 +142,12 @@ int main(int argc, char* argv[]) {
         } else if (strcmp(argv[i], "--find") == 0 && i + 1 < argc) {
             operation = "find";
             module_name = argv[++i];
+        } else if (strcmp(argv[i], "--batch") == 0 && i + 1 < argc) {
+            operation = "batch";
+            file_path = argv[++i];
+        } else if (strcmp(argv[i], "--monitor") == 0 && i + 1 < argc) {
+            operation = "monitor";
+            file_path = argv[++i];
         } else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
             size = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -279,6 +295,111 @@ int main(int argc, char* argv[]) {
             printf("    跳板地址: 0x%lx\n", info.trampoline_addr);
         } else {
             printf("[-] Hook 失败: %s\n", stealth::result_to_string(result));
+        }
+    }
+    else if (operation == "batch" || operation == "monitor") {
+        // 批量 patch / 监控模式
+        if (file_path.empty()) {
+            printf("[-] 缺少配置文件\n");
+            return 1;
+        }
+        
+        stealth::PatchConfig config;
+        if (!config.load(file_path)) {
+            printf("[-] 无法加载配置文件: %s\n", file_path.c_str());
+            return 1;
+        }
+        
+        printf("[*] 加载了 %zu 个 patch 项\n", config.entries.size());
+        
+        // 解析模块基址
+        for (auto& entry : config.entries) {
+            if (!entry.enabled) {
+                printf("[~] 跳过 (已禁用): %s\n", entry.name.c_str());
+                continue;
+            }
+            
+            uint64_t base = injector.find_module_base(entry.module);
+            if (base == 0) {
+                printf("[-] 找不到模块 %s，跳过: %s\n", entry.module.c_str(), entry.name.c_str());
+                continue;
+            }
+            
+            entry.resolved_addr = base + entry.offset;
+            printf("[*] %s: %s + 0x%lx = 0x%lx\n", 
+                   entry.name.c_str(), entry.module.c_str(), entry.offset, entry.resolved_addr);
+        }
+        
+        // 应用所有 patch
+        int success_count = 0;
+        int fail_count = 0;
+        
+        for (auto& entry : config.entries) {
+            if (!entry.enabled || entry.resolved_addr == 0) continue;
+            
+            result = injector.write_memory(entry.resolved_addr, 
+                                           entry.patched.data(), 
+                                           entry.patched.size());
+            if (result == stealth::MemInjectResult::SUCCESS) {
+                entry.applied = true;
+                success_count++;
+                printf("[+] 应用成功: %s\n", entry.name.c_str());
+            } else {
+                fail_count++;
+                printf("[-] 应用失败: %s (%s)\n", entry.name.c_str(), stealth::result_to_string(result));
+            }
+        }
+        
+        printf("\n[*] 批量 patch 完成: %d 成功, %d 失败\n", success_count, fail_count);
+        
+        // 监控模式
+        if (operation == "monitor" && success_count > 0) {
+            printf("[*] 进入监控模式，按 Ctrl+C 退出...\n");
+            signal(SIGINT, signal_handler);
+            signal(SIGTERM, signal_handler);
+            
+            uint32_t check_count = 0;
+            uint32_t reapply_count = 0;
+            
+            while (g_running) {
+                check_count++;
+                
+                for (auto& entry : config.entries) {
+                    if (!entry.enabled || !entry.applied || entry.resolved_addr == 0) continue;
+                    
+                    // 读取当前内存
+                    std::vector<uint8_t> current(entry.patched.size());
+                    result = injector.read_memory(entry.resolved_addr, current.data(), current.size());
+                    
+                    if (result == stealth::MemInjectResult::SUCCESS) {
+                        // 检查是否被还原
+                        bool reverted = (current != entry.patched);
+                        
+                        if (reverted) {
+                            printf("[!] 检测到还原: %s，重新应用...\n", entry.name.c_str());
+                            result = injector.write_memory(entry.resolved_addr,
+                                                           entry.patched.data(),
+                                                           entry.patched.size());
+                            if (result == stealth::MemInjectResult::SUCCESS) {
+                                reapply_count++;
+                                printf("[+] 重新应用成功\n");
+                            } else {
+                                printf("[-] 重新应用失败\n");
+                            }
+                        }
+                    }
+                }
+                
+                // 每秒检查一次
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                
+                // 每 60 秒输出状态
+                if (check_count % 60 == 0) {
+                    printf("[*] 监控中... 检查 %u 次, 重新应用 %u 次\n", check_count, reapply_count);
+                }
+            }
+            
+            printf("[*] 监控结束，共检查 %u 次，重新应用 %u 次\n", check_count, reapply_count);
         }
     }
 
