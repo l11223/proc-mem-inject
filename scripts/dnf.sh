@@ -1,173 +1,252 @@
 #!/system/bin/sh
 # ============================================================
-#  内存工具 v3.0 - 交互式菜单 (反检测增强版)
-#  支持: DNF / 王者荣耀 / 和平精英 / 自定义游戏
-#  用法: sh dnf.sh
+#  StealthMem v4.0 - 专业内存工具
+#  特性: 反检测 | 批量Patch | 实时监控 | 多游戏支持
 # ============================================================
 
-# ==================== 配置区域 ====================
+VERSION="4.0"
+
+# ==================== 核心配置 ====================
 ROOT_KEY="GD5IyCe0opOqirn6Qs1qDNVFWqpmYc3cNAd9pOgJ8erzOpMf"
 TOOL="/data/local/tmp/stealth_mem"
 SU="/data/GD5IyCe0opOqirn6/su"
-PATCH_DIR="/data/local/tmp"
+PATCH_DIR="/data/local/tmp/patches"
+LOG_FILE="/data/local/tmp/stealth.log"
 
-# 游戏配置 (包名 | 显示名 | 主模块 | patch文件)
-GAMES="
-com.tencent.tmgp.dnf|DNF|libUE4.so|dnf.patch
-com.tencent.tmgp.sgame|王者荣耀|libUE4.so|wzry.patch
-com.tencent.tmgp.pubgmhd|和平精英|libUE4.so|pubg.patch
-"
+# 当前状态
+GAME_PKG="com.tencent.tmgp.dnf"
+GAME_NAME="DNF"
+PID=""
+STEALTH_MODE="--stealth"
+STEALTH_ON=1
 
-# 默认游戏
-CURRENT_GAME="com.tencent.tmgp.dnf"
-CURRENT_NAME="DNF"
-CURRENT_MODULE="libUE4.so"
-CURRENT_PATCH="dnf.patch"
+# ==================== 工具函数 ====================
 
-# 反检测配置
-STEALTH="--stealth"
-STEALTH_STATUS="开启"
-
-# 颜色定义 (部分终端支持)
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-# ==================================================
-
-# 打印带颜色的文本
-print_color() {
-    printf "%b%s%b\n" "$1" "$2" "$NC"
+# 日志
+log() {
+    echo "[$(date '+%H:%M:%S')] $1" >> "$LOG_FILE"
 }
+
+# 带颜色输出
+R='\033[1;31m'  # 红
+G='\033[1;32m'  # 绿
+Y='\033[1;33m'  # 黄
+B='\033[1;34m'  # 蓝
+C='\033[1;36m'  # 青
+W='\033[1;37m'  # 白
+N='\033[0m'     # 重置
+
+p_ok()   { printf "${G}[✓]${N} %s\n" "$1"; }
+p_err()  { printf "${R}[✗]${N} %s\n" "$1"; }
+p_warn() { printf "${Y}[!]${N} %s\n" "$1"; }
+p_info() { printf "${B}[*]${N} %s\n" "$1"; }
 
 # 清屏
-cls() {
-    clear 2>/dev/null || printf "\033c"
-}
+cls() { clear 2>/dev/null || printf "\033[2J\033[H"; }
 
-# 打印横幅
-print_banner() {
-    cls
-    echo "╔════════════════════════════════════════════╗"
-    echo "║     内存工具 v3.0 (反检测增强版)           ║"
-    echo "╠════════════════════════════════════════════╣"
-    printf "║  当前游戏: %-30s  ║\n" "$CURRENT_NAME"
-    printf "║  反检测: %-32s  ║\n" "$STEALTH_STATUS"
-    echo "╚════════════════════════════════════════════╝"
-    echo ""
-}
-
-# 检查环境
-check_env() {
-    local err=0
-    
-    if [ ! -f "$TOOL" ]; then
-        print_color "$RED" "[✗] 找不到工具: $TOOL"
-        err=1
-    else
-        print_color "$GREEN" "[✓] 工具已就绪"
-    fi
-    
-    if [ ! -f "$SU" ]; then
-        print_color "$RED" "[✗] 找不到 su: $SU"
-        err=1
-    else
-        print_color "$GREEN" "[✓] ROOT 已就绪"
-    fi
-    
-    if [ $err -eq 1 ]; then
-        echo ""
-        echo "请先推送文件到手机:"
-        echo "  adb push stealth_mem /data/local/tmp/"
-        echo "  adb shell chmod +x /data/local/tmp/stealth_mem"
-        echo ""
-        wait_key
-        exit 1
-    fi
-}
-
-# 获取 PID
-get_pid() {
-    PID=$($SU -c "pidof $CURRENT_GAME" 2>/dev/null)
-    if [ -z "$PID" ]; then
-        print_color "$RED" "[✗] 游戏未运行: $CURRENT_NAME"
-        return 1
-    fi
-    print_color "$GREEN" "[✓] 进程 PID: $PID"
-    return 0
-}
-
-# 等待按键
-wait_key() {
-    echo ""
-    printf "按回车继续..."
+# 暂停
+pause() {
+    printf "\n${W}按回车继续...${N}"
     read _
 }
 
-# 执行命令
-run_cmd() {
-    $TOOL -k "$ROOT_KEY" -p $PID $STEALTH "$@"
+# 分隔线
+line() {
+    printf "${C}────────────────────────────────────────────${N}\n"
 }
 
-# 切换游戏
-switch_game() {
+# ==================== 环境检查 ====================
+
+init() {
+    # 创建目录
+    mkdir -p "$PATCH_DIR" 2>/dev/null
+    
+    # 检查工具
+    if [ ! -f "$TOOL" ]; then
+        p_err "找不到 stealth_mem"
+        echo "请执行: adb push stealth_mem /data/local/tmp/"
+        exit 1
+    fi
+    
+    if [ ! -f "$SU" ]; then
+        p_err "找不到 SKRoot su"
+        exit 1
+    fi
+    
+    chmod +x "$TOOL" 2>/dev/null
+    log "=== StealthMem v$VERSION 启动 ==="
+}
+
+# 获取PID
+refresh_pid() {
+    PID=$($SU -c "pidof $GAME_PKG" 2>/dev/null | awk '{print $1}')
+}
+
+# 检查游戏状态
+check_game() {
+    refresh_pid
+    if [ -z "$PID" ]; then
+        return 1
+    fi
+    return 0
+}
+
+# 执行工具命令
+run() {
+    $TOOL -k "$ROOT_KEY" -p "$PID" $STEALTH_MODE "$@"
+}
+
+# ==================== 界面组件 ====================
+
+# 状态栏
+show_status() {
+    local status_game status_stealth status_pid
+    
+    if check_game; then
+        status_game="${G}运行中${N}"
+        status_pid="${G}$PID${N}"
+    else
+        status_game="${R}未运行${N}"
+        status_pid="${R}---${N}"
+    fi
+    
+    if [ $STEALTH_ON -eq 1 ]; then
+        status_stealth="${G}开启${N}"
+    else
+        status_stealth="${Y}关闭${N}"
+    fi
+    
+    printf "\n"
+    printf "  ${W}游戏:${N} %-12s  ${W}PID:${N} %-8b  ${W}反检测:${N} %b\n" "$GAME_NAME" "$status_pid" "$status_stealth"
+    line
+}
+
+# 主横幅
+banner() {
     cls
-    echo "╔════════════════════════════════════════════╗"
-    echo "║              选择游戏                      ║"
-    echo "╠════════════════════════════════════════════╣"
+    printf "${C}"
+    cat << 'EOF'
+   _____ __             ____  __    __  ___              
+  / ___// /____  ____ _/ / /_/ /_  /  |/  /__  ____ ___  
+  \__ \/ __/ _ \/ __ `/ / __/ __ \/ /|_/ / _ \/ __ `__ \ 
+ ___/ / /_/  __/ /_/ / / /_/ / / / /  / /  __/ / / / / / 
+/____/\__/\___/\__,_/_/\__/_/ /_/_/  /_/\___/_/ /_/ /_/  
+EOF
+    printf "${N}"
+    printf "                                        ${Y}v$VERSION${N}\n"
+    show_status
+}
+
+# ==================== 游戏管理 ====================
+
+select_game() {
+    cls
+    printf "\n${W}  ══════ 选择游戏 ══════${N}\n\n"
     
-    local i=1
-    echo "$GAMES" | while IFS='|' read pkg name module patch; do
-        [ -z "$pkg" ] && continue
-        printf "║  %d. %-38s ║\n" "$i" "$name"
-        i=$((i+1))
-    done
+    echo "  1. DNF              (com.tencent.tmgp.dnf)"
+    echo "  2. 王者荣耀        (com.tencent.tmgp.sgame)"
+    echo "  3. 和平精英        (com.tencent.tmgp.pubgmhd)"
+    echo "  4. 英雄联盟手游    (com.tencent.lolm)"
+    echo "  5. 原神            (com.miHoYo.Yuanshen)"
+    echo "  6. 自定义包名"
+    echo ""
+    echo "  0. 返回"
     
-    echo "║  C. 自定义包名                             ║"
-    echo "║  0. 返回                                   ║"
-    echo "╚════════════════════════════════════════════╝"
-    printf "请选择: "
+    printf "\n${W}选择 > ${N}"
     read choice
     
     case "$choice" in
-        1) set_game "com.tencent.tmgp.dnf" "DNF" "libUE4.so" "dnf.patch" ;;
-        2) set_game "com.tencent.tmgp.sgame" "王者荣耀" "libUE4.so" "wzry.patch" ;;
-        3) set_game "com.tencent.tmgp.pubgmhd" "和平精英" "libUE4.so" "pubg.patch" ;;
-        [Cc])
-            printf "输入包名: "
+        1) GAME_PKG="com.tencent.tmgp.dnf"; GAME_NAME="DNF" ;;
+        2) GAME_PKG="com.tencent.tmgp.sgame"; GAME_NAME="王者荣耀" ;;
+        3) GAME_PKG="com.tencent.tmgp.pubgmhd"; GAME_NAME="和平精英" ;;
+        4) GAME_PKG="com.tencent.lolm"; GAME_NAME="LOL手游" ;;
+        5) GAME_PKG="com.miHoYo.Yuanshen"; GAME_NAME="原神" ;;
+        6)
+            printf "包名: "
             read pkg
-            if [ -n "$pkg" ]; then
-                set_game "$pkg" "$pkg" "libUE4.so" "custom.patch"
-            fi
+            [ -n "$pkg" ] && GAME_PKG="$pkg" && GAME_NAME="$pkg"
             ;;
         0) return ;;
     esac
-}
-
-set_game() {
-    CURRENT_GAME="$1"
-    CURRENT_NAME="$2"
-    CURRENT_MODULE="$3"
-    CURRENT_PATCH="$4"
-    print_color "$GREEN" "[✓] 已切换到: $CURRENT_NAME"
+    
+    p_ok "已选择: $GAME_NAME"
+    log "切换游戏: $GAME_NAME ($GAME_PKG)"
     sleep 1
 }
 
-# 查找模块
+# ==================== 内存操作 ====================
+
+mem_read() {
+    if ! check_game; then
+        p_err "游戏未运行"
+        pause
+        return
+    fi
+    
+    printf "地址 (0x...): "
+    read addr
+    printf "大小 [64]: "
+    read size
+    [ -z "$size" ] && size=64
+    
+    if [ -n "$addr" ]; then
+        echo ""
+        run --read "$addr" -s "$size"
+        log "读取内存: $addr ($size bytes)"
+    fi
+    pause
+}
+
+mem_write() {
+    if ! check_game; then
+        p_err "游戏未运行"
+        pause
+        return
+    fi
+    
+    printf "地址 (0x...): "
+    read addr
+    printf "数据 (hex): "
+    read data
+    
+    if [ -n "$addr" ] && [ -n "$data" ]; then
+        echo ""
+        run --write "$addr" -d "$data"
+        log "写入内存: $addr = $data"
+    fi
+    pause
+}
+
+mem_maps() {
+    if ! check_game; then
+        p_err "游戏未运行"
+        pause
+        return
+    fi
+    
+    echo ""
+    p_info "获取内存映射..."
+    run --maps | head -100
+    echo ""
+    p_warn "显示前100条，完整映射请导出"
+    pause
+}
+
 find_module() {
-    cls
-    echo "╔════════════════════════════════════════════╗"
-    echo "║              查找模块                      ║"
-    echo "╠════════════════════════════════════════════╣"
-    echo "║  1. libil2cpp.so (Unity)                   ║"
-    echo "║  2. libUE4.so (UE4引擎)                    ║"
-    echo "║  3. libtersafe.so (腾讯安全)               ║"
-    echo "║  4. libGameCore.so                         ║"
-    echo "║  5. 自定义模块名                           ║"
-    echo "║  0. 返回                                   ║"
-    echo "╚════════════════════════════════════════════╝"
-    printf "请选择: "
+    if ! check_game; then
+        p_err "游戏未运行"
+        pause
+        return
+    fi
+    
+    printf "\n${W}  ══════ 查找模块 ══════${N}\n\n"
+    echo "  1. libil2cpp.so     (Unity)"
+    echo "  2. libUE4.so        (UE4)"
+    echo "  3. libtersafe.so    (腾讯安全)"
+    echo "  4. libGameCore.so"
+    echo "  5. 自定义"
+    echo ""
+    printf "${W}选择 > ${N}"
     read choice
     
     local module=""
@@ -176,171 +255,135 @@ find_module() {
         2) module="libUE4.so" ;;
         3) module="libtersafe.so" ;;
         4) module="libGameCore.so" ;;
-        5) 
-            printf "输入模块名: "
-            read module
-            ;;
-        0) return ;;
+        5) printf "模块名: "; read module ;;
     esac
     
-    if [ -n "$module" ] && get_pid; then
+    if [ -n "$module" ]; then
         echo ""
-        run_cmd --find "$module"
+        run --find "$module"
+        log "查找模块: $module"
     fi
-    wait_key
+    pause
 }
 
-# 内存操作菜单
-memory_ops() {
+mem_menu() {
     while true; do
-        cls
-        echo "╔════════════════════════════════════════════╗"
-        echo "║              内存操作                      ║"
-        echo "╠════════════════════════════════════════════╣"
-        echo "║  1. 显示内存映射                           ║"
-        echo "║  2. 读取内存                               ║"
-        echo "║  3. 写入内存                               ║"
-        echo "║  4. 搜索字节 (开发中)                      ║"
-        echo "║  0. 返回                                   ║"
-        echo "╚════════════════════════════════════════════╝"
-        printf "请选择: "
+        banner
+        printf "${W}  ══════ 内存操作 ══════${N}\n\n"
+        echo "  1. 读取内存"
+        echo "  2. 写入内存"
+        echo "  3. 内存映射"
+        echo "  4. 查找模块"
+        echo "  5. 列出所有SO"
+        echo ""
+        echo "  0. 返回"
+        printf "\n${W}选择 > ${N}"
         read choice
         
         case "$choice" in
-            1)
-                if get_pid; then
-                    echo ""
-                    run_cmd --maps | head -50
-                    echo "... (显示前50条)"
-                fi
-                wait_key
-                ;;
-            2)
-                printf "地址 (如 0x7000123456): "
-                read addr
-                printf "大小 (默认64): "
-                read size
-                [ -z "$size" ] && size=64
-                if [ -n "$addr" ] && get_pid; then
-                    echo ""
-                    run_cmd --read "$addr" -s $size
-                fi
-                wait_key
-                ;;
-            3)
-                printf "地址 (如 0x7000123456): "
-                read addr
-                printf "数据 (hex, 如 1F2003D5): "
-                read data
-                if [ -n "$addr" ] && [ -n "$data" ] && get_pid; then
-                    echo ""
-                    run_cmd --write "$addr" -d "$data"
-                fi
-                wait_key
-                ;;
-            4)
-                print_color "$YELLOW" "[!] 功能开发中..."
-                wait_key
-                ;;
-            0) return ;;
-        esac
-    done
-}
-
-# Patch 操作菜单
-patch_ops() {
-    local patch_file="$PATCH_DIR/$CURRENT_PATCH"
-    
-    while true; do
-        cls
-        echo "╔════════════════════════════════════════════╗"
-        echo "║              Patch 操作                    ║"
-        echo "╠════════════════════════════════════════════╣"
-        printf "║  配置文件: %-31s ║\n" "$CURRENT_PATCH"
-        echo "╠════════════════════════════════════════════╣"
-        echo "║  1. 一键应用 Patch                         ║"
-        echo "║  2. 监控模式 (自动重新patch)               ║"
-        echo "║  3. 查看配置文件                           ║"
-        echo "║  4. 切换配置文件                           ║"
-        echo "║  5. 创建新配置                             ║"
-        echo "║  0. 返回                                   ║"
-        echo "╚════════════════════════════════════════════╝"
-        printf "请选择: "
-        read choice
-        
-        case "$choice" in
-            1)
-                if [ ! -f "$patch_file" ]; then
-                    print_color "$RED" "[✗] 配置文件不存在: $patch_file"
-                    wait_key
-                    continue
-                fi
-                if get_pid; then
-                    echo ""
-                    print_color "$BLUE" "[*] 正在应用 patch..."
-                    run_cmd --batch "$patch_file"
-                fi
-                wait_key
-                ;;
-            2)
-                if [ ! -f "$patch_file" ]; then
-                    print_color "$RED" "[✗] 配置文件不存在: $patch_file"
-                    wait_key
-                    continue
-                fi
-                if get_pid; then
-                    echo ""
-                    print_color "$BLUE" "[*] 进入监控模式，按 Ctrl+C 退出..."
-                    run_cmd --monitor "$patch_file"
-                fi
-                wait_key
-                ;;
-            3)
-                if [ -f "$patch_file" ]; then
-                    echo ""
-                    cat "$patch_file"
-                else
-                    print_color "$RED" "[✗] 文件不存在"
-                fi
-                wait_key
-                ;;
-            4)
-                printf "输入配置文件名: "
-                read new_patch
-                if [ -n "$new_patch" ]; then
-                    CURRENT_PATCH="$new_patch"
-                    patch_file="$PATCH_DIR/$CURRENT_PATCH"
-                    print_color "$GREEN" "[✓] 已切换: $CURRENT_PATCH"
-                fi
-                wait_key
-                ;;
+            1) mem_read ;;
+            2) mem_write ;;
+            3) mem_maps ;;
+            4) find_module ;;
             5)
-                create_patch_config
+                if check_game; then
+                    echo ""
+                    run --maps | grep "\.so" | awk '{print $NF}' | sort -u | head -50
+                    pause
+                else
+                    p_err "游戏未运行"
+                    pause
+                fi
                 ;;
             0) return ;;
         esac
     done
 }
 
-# 创建 patch 配置
-create_patch_config() {
-    printf "配置文件名 (如 my.patch): "
-    read filename
-    [ -z "$filename" ] && return
-    
-    local filepath="$PATCH_DIR/$filename"
-    
-    cat > "$filepath" << 'EOF'
-# Patch 配置文件
-# 格式:
-# [名称]
-# module=模块名
-# offset=偏移地址 (十六进制)
-# original=原始字节 (用于验证)
-# patch=修改字节
-# enabled=true/false
+# ==================== Patch 操作 ====================
 
-# ========== 示例 ==========
+list_patches() {
+    echo ""
+    p_info "可用配置文件:"
+    ls -1 "$PATCH_DIR"/*.patch 2>/dev/null | while read f; do
+        printf "  - %s\n" "$(basename "$f")"
+    done
+    [ ! "$(ls -A "$PATCH_DIR"/*.patch 2>/dev/null)" ] && echo "  (无)"
+}
+
+apply_patch() {
+    if ! check_game; then
+        p_err "游戏未运行"
+        pause
+        return
+    fi
+    
+    list_patches
+    printf "\n配置文件名: "
+    read pfile
+    
+    local path="$PATCH_DIR/$pfile"
+    [ ! -f "$path" ] && path="$pfile"
+    
+    if [ -f "$path" ]; then
+        echo ""
+        p_info "应用 Patch: $path"
+        run --batch "$path"
+        log "应用Patch: $path"
+    else
+        p_err "文件不存在: $path"
+    fi
+    pause
+}
+
+monitor_patch() {
+    if ! check_game; then
+        p_err "游戏未运行"
+        pause
+        return
+    fi
+    
+    list_patches
+    printf "\n配置文件名: "
+    read pfile
+    
+    local path="$PATCH_DIR/$pfile"
+    [ ! -f "$path" ] && path="$pfile"
+    
+    if [ -f "$path" ]; then
+        echo ""
+        p_info "进入监控模式 (Ctrl+C 退出)"
+        p_info "配置: $path"
+        echo ""
+        run --monitor "$path"
+        log "监控模式: $path"
+    else
+        p_err "文件不存在: $path"
+    fi
+    pause
+}
+
+create_patch() {
+    printf "文件名 (如 my.patch): "
+    read fname
+    [ -z "$fname" ] && return
+    
+    local path="$PATCH_DIR/$fname"
+    
+    cat > "$path" << 'PATCHEOF'
+# ============================================================
+# Patch 配置文件
+# ============================================================
+# 格式:
+#   [名称]
+#   module=模块名
+#   offset=偏移地址
+#   original=原始字节 (可选,用于验证)
+#   patch=修改字节
+#   enabled=true/false
+# ============================================================
+
+# 示例: 让检测函数返回0
 # [绕过检测]
 # module=libtersafe.so
 # offset=0x123456
@@ -348,169 +391,241 @@ create_patch_config() {
 # patch=00 00 80 D2 C0 03 5F D6
 # enabled=true
 
-# ========== ARM64 常用 patch ==========
-# 返回0: 00 00 80 D2 C0 03 5F D6  (MOV X0, #0; RET)
-# 返回1: 20 00 80 D2 C0 03 5F D6  (MOV X0, #1; RET)
-# NOP:   1F 20 03 D5              (NOP)
-EOF
+# ============================================================
+# ARM64 常用指令:
+#   返回0: 00 00 80 D2 C0 03 5F D6  (MOV X0,#0; RET)
+#   返回1: 20 00 80 D2 C0 03 5F D6  (MOV X0,#1; RET)
+#   NOP:   1F 20 03 D5
+# ============================================================
+PATCHEOF
 
-    print_color "$GREEN" "[✓] 已创建: $filepath"
-    CURRENT_PATCH="$filename"
-    wait_key
+    p_ok "已创建: $path"
+    log "创建配置: $path"
+    pause
 }
 
-# 快捷操作
-quick_ops() {
+patch_menu() {
     while true; do
-        cls
-        echo "╔════════════════════════════════════════════╗"
-        echo "║              快捷操作                      ║"
-        echo "╠════════════════════════════════════════════╣"
-        echo "║  1. 查找 + Patch 腾讯安全                  ║"
-        echo "║  2. 显示所有已加载模块                     ║"
-        echo "║  3. 导出内存映射到文件                     ║"
-        echo "║  0. 返回                                   ║"
-        echo "╚════════════════════════════════════════════╝"
-        printf "请选择: "
+        banner
+        printf "${W}  ══════ Patch 操作 ══════${N}\n\n"
+        echo "  1. 应用 Patch"
+        echo "  2. 监控模式"
+        echo "  3. 查看配置"
+        echo "  4. 创建配置"
+        echo "  5. 编辑配置"
+        echo ""
+        echo "  0. 返回"
+        printf "\n${W}选择 > ${N}"
         read choice
         
         case "$choice" in
-            1)
-                if get_pid; then
-                    echo ""
-                    print_color "$BLUE" "[*] 查找 libtersafe.so..."
-                    run_cmd --find libtersafe.so
-                    echo ""
-                    printf "是否应用 patch? (y/n): "
-                    read yn
-                    if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then
-                        local patch_file="$PATCH_DIR/$CURRENT_PATCH"
-                        if [ -f "$patch_file" ]; then
-                            run_cmd --batch "$patch_file"
-                        else
-                            print_color "$RED" "[✗] 配置文件不存在"
-                        fi
-                    fi
-                fi
-                wait_key
-                ;;
-            2)
-                if get_pid; then
-                    echo ""
-                    run_cmd --maps | grep "\.so" | awk '{print $NF}' | sort -u
-                fi
-                wait_key
-                ;;
+            1) apply_patch ;;
+            2) monitor_patch ;;
             3)
-                if get_pid; then
-                    local outfile="/data/local/tmp/maps_${PID}.txt"
-                    run_cmd --maps > "$outfile"
-                    print_color "$GREEN" "[✓] 已导出: $outfile"
-                fi
-                wait_key
+                list_patches
+                printf "\n查看文件: "
+                read f
+                [ -f "$PATCH_DIR/$f" ] && cat "$PATCH_DIR/$f"
+                [ -f "$f" ] && cat "$f"
+                pause
+                ;;
+            4) create_patch ;;
+            5)
+                list_patches
+                printf "\n编辑文件: "
+                read f
+                local p="$PATCH_DIR/$f"
+                [ -f "$p" ] && vi "$p" 2>/dev/null || nano "$p" 2>/dev/null
                 ;;
             0) return ;;
         esac
     done
 }
 
-# 设置菜单
+# ==================== 快捷功能 ====================
+
+quick_tersafe() {
+    if ! check_game; then
+        p_err "游戏未运行"
+        pause
+        return
+    fi
+    
+    echo ""
+    p_info "查找 libtersafe.so..."
+    local base=$(run --find libtersafe.so 2>&1 | grep "基址" | awk '{print $NF}')
+    
+    if [ -n "$base" ]; then
+        p_ok "找到: $base"
+        echo ""
+        printf "是否应用默认Patch? (y/n): "
+        read yn
+        if [ "$yn" = "y" ]; then
+            # 创建临时patch
+            local tmp="/data/local/tmp/.tmp_tersafe.patch"
+            cat > "$tmp" << EOF
+[tersafe_bypass]
+module=libtersafe.so
+offset=0x0
+patch=C0 03 5F D6
+enabled=true
+EOF
+            p_warn "需要正确的偏移地址才能生效"
+            p_info "请用IDA分析后修改配置文件"
+        fi
+    else
+        p_err "未找到 libtersafe.so"
+    fi
+    pause
+}
+
+quick_menu() {
+    while true; do
+        banner
+        printf "${W}  ══════ 快捷功能 ══════${N}\n\n"
+        echo "  1. 一键查找腾讯安全"
+        echo "  2. 导出内存映射"
+        echo "  3. 刷新游戏状态"
+        echo "  4. 查看日志"
+        echo ""
+        echo "  0. 返回"
+        printf "\n${W}选择 > ${N}"
+        read choice
+        
+        case "$choice" in
+            1) quick_tersafe ;;
+            2)
+                if check_game; then
+                    local out="/data/local/tmp/maps_${GAME_NAME}_${PID}.txt"
+                    run --maps > "$out"
+                    p_ok "已导出: $out"
+                    log "导出映射: $out"
+                else
+                    p_err "游戏未运行"
+                fi
+                pause
+                ;;
+            3)
+                refresh_pid
+                if [ -n "$PID" ]; then
+                    p_ok "PID: $PID"
+                else
+                    p_warn "游戏未运行"
+                fi
+                pause
+                ;;
+            4)
+                echo ""
+                [ -f "$LOG_FILE" ] && tail -30 "$LOG_FILE" || echo "(无日志)"
+                pause
+                ;;
+            0) return ;;
+        esac
+    done
+}
+
+# ==================== 设置 ====================
+
 settings_menu() {
     while true; do
-        cls
-        echo "╔════════════════════════════════════════════╗"
-        echo "║              设置                          ║"
-        echo "╠════════════════════════════════════════════╣"
-        printf "║  反检测状态: %-29s ║\n" "$STEALTH_STATUS"
-        echo "╠════════════════════════════════════════════╣"
-        echo "║  1. 切换反检测 开/关                       ║"
-        echo "║  2. 查看当前配置                           ║"
-        echo "║  3. 关于                                   ║"
-        echo "║  0. 返回                                   ║"
-        echo "╚════════════════════════════════════════════╝"
-        printf "请选择: "
+        banner
+        printf "${W}  ══════ 设置 ══════${N}\n\n"
+        
+        if [ $STEALTH_ON -eq 1 ]; then
+            echo "  1. 反检测: ${G}开启${N}"
+        else
+            echo "  1. 反检测: ${Y}关闭${N}"
+        fi
+        echo "  2. 查看配置"
+        echo "  3. 清除日志"
+        echo "  4. 关于"
+        echo ""
+        echo "  0. 返回"
+        printf "\n${W}选择 > ${N}"
         read choice
         
         case "$choice" in
             1)
-                if [ "$STEALTH" = "--stealth" ]; then
-                    STEALTH="--no-stealth"
-                    STEALTH_STATUS="关闭 (速度快/风险高)"
-                    print_color "$YELLOW" "[!] 反检测已关闭"
+                if [ $STEALTH_ON -eq 1 ]; then
+                    STEALTH_ON=0
+                    STEALTH_MODE="--no-stealth"
+                    p_warn "反检测已关闭"
                 else
-                    STEALTH="--stealth"
-                    STEALTH_STATUS="开启"
-                    print_color "$GREEN" "[✓] 反检测已开启"
+                    STEALTH_ON=1
+                    STEALTH_MODE="--stealth"
+                    p_ok "反检测已开启"
                 fi
+                log "反检测: $STEALTH_ON"
                 sleep 1
                 ;;
             2)
                 echo ""
-                echo "当前配置:"
-                echo "  游戏: $CURRENT_NAME ($CURRENT_GAME)"
-                echo "  模块: $CURRENT_MODULE"
-                echo "  Patch: $CURRENT_PATCH"
-                echo "  反检测: $STEALTH_STATUS"
-                echo "  工具: $TOOL"
+                echo "  ROOT_KEY: ${ROOT_KEY:0:20}..."
+                echo "  TOOL: $TOOL"
                 echo "  SU: $SU"
-                wait_key
+                echo "  PATCH_DIR: $PATCH_DIR"
+                echo "  GAME: $GAME_NAME ($GAME_PKG)"
+                pause
                 ;;
             3)
+                rm -f "$LOG_FILE"
+                p_ok "日志已清除"
+                sleep 1
+                ;;
+            4)
                 echo ""
-                echo "内存工具 v3.0"
-                echo "基于 /proc/pid/mem 的运行时内存修改"
+                echo "  StealthMem v$VERSION"
+                echo "  基于 /proc/pid/mem 的运行时内存修改工具"
                 echo ""
-                echo "特性:"
-                echo "  - 不修改文件 (绕过完整性检测)"
-                echo "  - 不使用 ptrace (绕过 ptrace 检测)"
-                echo "  - 进程名伪装 (kworker/0:0)"
-                echo "  - 时序随机化"
-                echo "  - 分块访问"
+                echo "  特性:"
+                echo "    - 不修改文件 (绕过完整性检测)"
+                echo "    - 不使用 ptrace"
+                echo "    - 进程名伪装 (kworker/0:0)"
+                echo "    - 时序随机化"
+                echo "    - 分块访问"
                 echo ""
-                echo "需要 SKRoot Lite 内核支持"
-                wait_key
+                echo "  需要 SKRoot Lite 内核支持"
+                pause
                 ;;
             0) return ;;
         esac
     done
 }
 
-# 主菜单
+# ==================== 主菜单 ====================
+
 main_menu() {
     while true; do
-        print_banner
-        echo "  1. 切换游戏"
-        echo "  2. 查找模块"
-        echo "  3. 内存操作"
-        echo "  4. Patch 操作"
-        echo "  5. 快捷操作"
-        echo "  6. 设置"
-        echo "  0. 退出"
+        banner
+        printf "${W}  ══════ 主菜单 ══════${N}\n\n"
+        echo "  1. 选择游戏"
+        echo "  2. 内存操作"
+        echo "  3. Patch 操作"
+        echo "  4. 快捷功能"
+        echo "  5. 设置"
         echo ""
-        printf "请选择: "
+        echo "  0. 退出"
+        printf "\n${W}选择 > ${N}"
         read choice
         
         case "$choice" in
-            1) switch_game ;;
-            2) find_module ;;
-            3) memory_ops ;;
-            4) patch_ops ;;
-            5) quick_ops ;;
-            6) settings_menu ;;
+            1) select_game ;;
+            2) mem_menu ;;
+            3) patch_menu ;;
+            4) quick_menu ;;
+            5) settings_menu ;;
             0)
                 cls
-                echo "再见宝宝~ 💕"
+                echo ""
+                p_info "再见宝宝~ 💕"
+                echo ""
+                log "=== 退出 ==="
                 exit 0
-                ;;
-            *)
-                print_color "$RED" "[!] 无效选择"
-                sleep 1
                 ;;
         esac
     done
 }
 
-# ==================== 主程序 ====================
-cls
-check_env
+# ==================== 入口 ====================
+init
 main_menu
