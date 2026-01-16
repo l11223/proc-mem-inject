@@ -1,0 +1,57 @@
+name: Build proc-mem-inject
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
+      id: setup-ndk
+      with:
+        ndk-version: r25c
+        add-to-path: true
+    
+    - name: Setup CMake
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: '3.22.x'
+    
+    - name: Setup Ninja
+      uses: seanmiddleditch/gha-setup-ninja@master
+    
+    - name: Build arm64-v8a
+      env:
+        ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+      run: |
+        mkdir -p build/arm64-v8a outputs/arm64-v8a
+        cd build/arm64-v8a
+        cmake ../.. \
+          -G Ninja \
+          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_PLATFORM=android-24 \
+          -DCMAKE_BUILD_TYPE=Release
+        cmake --build . -j$(nproc)
+    
+    - name: List outputs
+      run: |
+        echo "=== Build outputs ==="
+        find outputs -type f 2>/dev/null || echo "No outputs found"
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: stealth-mem-arm64-v8a
+        path: outputs/arm64-v8a/
+        if-no-files-found: warn
