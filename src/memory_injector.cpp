@@ -5,9 +5,16 @@
  * - 使用 /proc/<pid>/mem 直接读写目标进程内存
  * - 需要 ROOT 权限（通过 SKRoot Lite 获取）
  * - 不使用 ptrace，不修改文件
+ * 
+ * 反检测特性：
+ * - 时序随机化：操作之间加入随机延迟
+ * - 进程伪装：修改进程名为系统进程
+ * - 分块访问：避免大块连续读写
+ * - 访问混淆：随机化访问顺序
  */
 
 #include "memory_injector.h"
+#include "anti_detect.h"
 #include "rootkit_umbrella.h"
 
 #include <fcntl.h>
@@ -98,16 +105,20 @@ void MemoryInjector::detach() {
 MemInjectResult MemoryInjector::read_memory(uint64_t addr, void* buf, size_t size) {
     if (m_mem_fd < 0) return MemInjectResult::ERR_OPEN_MEM;
     
-    if (lseek64(m_mem_fd, addr, SEEK_SET) == (off64_t)-1) {
-        return MemInjectResult::ERR_INVALID_ADDR;
-    }
+    // 使用分块读取（反检测）
+    auto read_chunk = [this](uint64_t a, void* b, size_t s) -> bool {
+        if (lseek64(m_mem_fd, a, SEEK_SET) == (off64_t)-1) {
+            return false;
+        }
+        return read(m_mem_fd, b, s) == (ssize_t)s;
+    };
     
-    ssize_t ret = read(m_mem_fd, buf, size);
-    if (ret != (ssize_t)size) {
-        return MemInjectResult::ERR_READ_MEM;
-    }
+    // 操作前随机延迟
+    anti::timing_jitter();
     
-    return MemInjectResult::SUCCESS;
+    bool success = anti::chunked_read(addr, buf, size, read_chunk);
+    
+    return success ? MemInjectResult::SUCCESS : MemInjectResult::ERR_READ_MEM;
 }
 
 MemInjectResult MemoryInjector::write_memory(uint64_t addr, const void* buf, size_t size) {
@@ -122,16 +133,20 @@ MemInjectResult MemoryInjector::write_memory(uint64_t addr, const void* buf, siz
         return MemInjectResult::ERR_OPEN_MEM;
     }
     
-    if (lseek64(m_mem_fd, addr, SEEK_SET) == (off64_t)-1) {
-        return MemInjectResult::ERR_INVALID_ADDR;
-    }
+    // 使用分块写入（反检测）
+    auto write_chunk = [this](uint64_t a, const void* b, size_t s) -> bool {
+        if (lseek64(m_mem_fd, a, SEEK_SET) == (off64_t)-1) {
+            return false;
+        }
+        return write(m_mem_fd, b, s) == (ssize_t)s;
+    };
     
-    ssize_t ret = write(m_mem_fd, buf, size);
-    if (ret != (ssize_t)size) {
-        return MemInjectResult::ERR_WRITE_MEM;
-    }
+    // 操作前随机延迟
+    anti::timing_jitter();
     
-    return MemInjectResult::SUCCESS;
+    bool success = anti::chunked_write(addr, buf, size, write_chunk);
+    
+    return success ? MemInjectResult::SUCCESS : MemInjectResult::ERR_WRITE_MEM;
 }
 
 bool MemoryInjector::get_memory_maps(std::vector<MemoryRegion>& regions) {

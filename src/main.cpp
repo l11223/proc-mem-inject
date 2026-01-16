@@ -5,6 +5,7 @@
  * - 不修改任何文件（绕过文件完整性检测）
  * - 不使用 ptrace（绕过 ptrace 检测）
  * - 纯内存操作，进程重启后痕迹消失
+ * - 反检测：时序随机化、进程伪装、分块访问
  * 
  * 用法:
  *   stealth_mem -k <root_key> -p <pid> -a <addr> -c <shellcode_file>
@@ -21,11 +22,16 @@
 #include <vector>
 #include <fstream>
 #include "memory_injector.h"
+#include "anti_detect.h"
+
+// 保存原始 argv 用于伪装
+static int g_argc = 0;
+static char** g_argv = nullptr;
 
 void print_usage(const char* prog) {
-    printf("proc-mem-inject - 运行时内存注入 (不修改文件，不用ptrace)\n\n");
+    printf("proc-mem-inject v2.0 - 运行时内存注入 (反检测增强版)\n\n");
     printf("用法:\n");
-    printf("  %s -k <root_key> -p <pid> [操作]\n\n", prog);
+    printf("  %s -k <root_key> -p <pid> [操作] [选项]\n\n", prog);
     printf("操作:\n");
     printf("  --maps                    显示内存映射\n");
     printf("  --read <addr> -s <size>   读取内存\n");
@@ -33,15 +39,19 @@ void print_usage(const char* prog) {
     printf("  --inject -c <file>        注入 shellcode 文件\n");
     printf("  --hook <addr> -c <file>   在指定地址安装 hook\n");
     printf("  --find <module>           查找模块基址\n\n");
+    printf("反检测选项:\n");
+    printf("  --stealth                 启用全部反检测 (默认)\n");
+    printf("  --no-stealth              禁用反检测\n");
+    printf("  --delay <min> <max>       设置延迟范围 (微秒, 默认 100-5000)\n");
+    printf("  --chunk <size>            设置分块大小 (默认 64)\n");
+    printf("  --fake-name <name>        伪装进程名 (默认 kworker/0:0)\n\n");
     printf("示例:\n");
-    printf("  # 查看内存映射\n");
+    printf("  # 查看内存映射 (带反检测)\n");
     printf("  %s -k \"key\" -p 1234 --maps\n\n", prog);
-    printf("  # 读取内存\n");
-    printf("  %s -k \"key\" -p 1234 --read 0x7000000000 -s 64\n\n", prog);
-    printf("  # 写入 NOP 指令\n");
-    printf("  %s -k \"key\" -p 1234 --write 0x7000001000 -d 1F2003D5\n\n", prog);
-    printf("  # 查找 libil2cpp.so 基址\n");
-    printf("  %s -k \"key\" -p 1234 --find libil2cpp.so\n", prog);
+    printf("  # 写入 NOP (禁用反检测，更快)\n");
+    printf("  %s -k \"key\" -p 1234 --no-stealth --write 0x7000001000 -d 1F2003D5\n\n", prog);
+    printf("  # 自定义延迟和进程名\n");
+    printf("  %s -k \"key\" -p 1234 --delay 50 2000 --fake-name \"system_server\" --maps\n", prog);
 }
 
 // 十六进制字符串转字节
@@ -83,6 +93,10 @@ std::vector<uint8_t> read_file(const std::string& path) {
 }
 
 int main(int argc, char* argv[]) {
+    // 保存原始参数用于伪装
+    g_argc = argc;
+    g_argv = argv;
+    
     std::string root_key;
     pid_t pid = 0;
     std::string operation;
@@ -91,6 +105,10 @@ int main(int argc, char* argv[]) {
     std::string hex_data;
     std::string file_path;
     std::string module_name;
+    
+    // 反检测配置
+    stealth::anti::AntiDetectConfig anti_config;
+    bool stealth_enabled = true;
 
     // 解析参数
     for (int i = 1; i < argc; i++) {
@@ -120,6 +138,17 @@ int main(int argc, char* argv[]) {
             hex_data = argv[++i];
         } else if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
             file_path = argv[++i];
+        } else if (strcmp(argv[i], "--stealth") == 0) {
+            stealth_enabled = true;
+        } else if (strcmp(argv[i], "--no-stealth") == 0) {
+            stealth_enabled = false;
+        } else if (strcmp(argv[i], "--delay") == 0 && i + 2 < argc) {
+            anti_config.min_delay_us = atoi(argv[++i]);
+            anti_config.max_delay_us = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--chunk") == 0 && i + 1 < argc) {
+            anti_config.chunk_size = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--fake-name") == 0 && i + 1 < argc) {
+            anti_config.fake_process_name = argv[++i];
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -130,6 +159,26 @@ int main(int argc, char* argv[]) {
     if (root_key.empty() || pid == 0 || operation.empty()) {
         print_usage(argv[0]);
         return 1;
+    }
+    
+    // 初始化反检测
+    if (stealth_enabled) {
+        anti_config.enable_timing_jitter = true;
+        anti_config.enable_process_mask = true;
+        anti_config.enable_chunked_access = true;
+        anti_config.enable_access_shuffle = true;
+    } else {
+        anti_config.enable_timing_jitter = false;
+        anti_config.enable_process_mask = false;
+        anti_config.enable_chunked_access = false;
+        anti_config.enable_access_shuffle = false;
+    }
+    stealth::anti::init_anti_detect(g_argc, g_argv, anti_config);
+    
+    if (stealth_enabled) {
+        // 静默模式，减少输出
+    } else {
+        printf("[*] 反检测: 已禁用\n");
     }
 
     // 创建注入器
