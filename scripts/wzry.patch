@@ -1,4 +1,4 @@
-# 王者荣耀 Patch 配置示例
+# 王者荣耀 Patch 配置
 # 格式:
 # [名称]
 # module=模块名
@@ -7,21 +7,14 @@
 # patch=修改字节
 # enabled=true/false
 
-# ========== 示例 (需要根据实际版本修改) ==========
+# ========== 腾讯安全 libtersafe.so ==========
 
-[绕过检测函数1]
+[sub_3D4B54 返回0]
 module=libtersafe.so
-offset=0x12345
-original=F0 4F 2D E9
-patch=00 00 A0 E3 1E FF 2F E1
-enabled=false
-
-[绕过检测函数2]
-module=libUE4.so
-offset=0xABCDEF
+offset=0x3D4B54
 original=FF 43 01 D1
 patch=00 00 80 D2 C0 03 5F D6
-enabled=false
+enabled=true
 
 # ========== 使用说明 ==========
 # 1. 用 IDA 分析 libUE4.so 或 libtersafe.so
@@ -30,3 +23,8 @@ enabled=false
 # 4. 修改 enabled=true 启用
 # 5. 运行: stealth_mem -k "key" -p PID --batch wzry.patch
 # 6. 监控: stealth_mem -k "key" -p PID --monitor wzry.patch
+
+# ========== ARM64 常用 patch ==========
+# 返回0: 00 00 80 D2 C0 03 5F D6  (MOV X0, #0; RET)
+# 返回1: 20 00 80 D2 C0 03 5F D6  (MOV X0, #1; RET)
+# NOP:   1F 20 03 D5              (NOP)
