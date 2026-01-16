@@ -45,7 +45,7 @@ MemoryInjector::~MemoryInjector() {
 
 bool MemoryInjector::ensure_root() {
     auto err = kernel_root::get_root(m_root_key.c_str());
-    return kernel_root::is_ok(err);
+    return is_ok(err);
 }
 
 bool MemoryInjector::open_mem() {
