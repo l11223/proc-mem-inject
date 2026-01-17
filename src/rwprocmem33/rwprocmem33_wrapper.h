@@ -14,6 +14,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <sys/prctl.h>
 #include <elf.h>
 #include <random>
