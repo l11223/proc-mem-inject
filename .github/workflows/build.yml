@@ -1,4 +1,4 @@
-name: Build proc-mem-inject
+name: Build proc-mem-inject (Dual Version)
 
 on:
   push:
@@ -14,6 +14,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        submodules: recursive  # 确保拉取 rwProcMem33 子模块
     
     - name: Setup Android NDK
       uses: nttld/setup-ndk@v1
@@ -30,6 +32,17 @@ jobs:
     - name: Setup Ninja
       uses: seanmiddleditch/gha-setup-ninja@master
     
+    - name: Display build info
+      run: |
+        echo "🚀 Building proc-mem-inject - Dual Version Architecture"
+        echo "=================================================="
+        echo "📦 Version 1: stealth_mem (Traditional - /proc/pid/mem)"
+        echo "📦 Version 2: kernel_mem (Kernel - rwProcMem33 driver)"
+        echo "=================================================="
+        echo "NDK Path: ${{ steps.setup-ndk.outputs.ndk-path }}"
+        echo "CMake Version: $(cmake --version | head -n1)"
+        echo "Ninja Version: $(ninja --version)"
+    
     - name: Build arm64-v8a
       env:
         ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
@@ -44,14 +57,114 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
         cmake --build . -j$(nproc)
     
-    - name: List outputs
+    - name: Verify build outputs
       run: |
-        echo "=== Build outputs ==="
+        echo "=== 📦 Build Outputs ==="
+        echo ""
+        if [ -f "outputs/arm64-v8a/stealth_mem" ]; then
+          echo "✅ stealth_mem (Traditional Version)"
+          ls -lh outputs/arm64-v8a/stealth_mem
+          file outputs/arm64-v8a/stealth_mem
+        else
+          echo "❌ stealth_mem not found"
+        fi
+        echo ""
+        if [ -f "outputs/arm64-v8a/kernel_mem" ]; then
+          echo "✅ kernel_mem (Kernel Version)"
+          ls -lh outputs/arm64-v8a/kernel_mem
+          file outputs/arm64-v8a/kernel_mem
+        else
+          echo "❌ kernel_mem not found"
+        fi
+        echo ""
+        echo "=== All files in outputs ==="
         find outputs -type f 2>/dev/null || echo "No outputs found"
     
-    - name: Upload artifacts
+    - name: Create release info
+      run: |
+        cat > outputs/arm64-v8a/BUILD_INFO.txt << 'EOF'
+        ╔══════════════════════════════════════════════════════════════╗
+        ║         proc-mem-inject - Dual Version Build Info           ║
+        ╚══════════════════════════════════════════════════════════════╝
+        
+        Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+        Build Type: Release
+        Architecture: ARM64-v8a
+        NDK Version: r26b
+        
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        📦 Version 1: stealth_mem (Traditional)
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        - Based on /proc/pid/mem
+        - Uses SKRoot Lite kernel_root_kit
+        - Fast deployment, no driver needed
+        - Good for quick testing
+        
+        Usage:
+          adb push stealth_mem /data/local/tmp/
+          adb shell /data/local/tmp/stealth_mem -k "ROOT_KEY" -p PID --read ADDR -s SIZE
+        
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        📦 Version 2: kernel_mem (Kernel) ⭐ RECOMMENDED
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        - Based on rwProcMem33 kernel driver
+        - True kernel-level operation
+        - Hardware-level memory access
+        - Driver-level hiding mechanism
+        - Android 15 perfect support
+        - Almost no traces
+        
+        Usage:
+          1. Load driver: adb shell su -c "insmod rwProcMem_module.ko"
+          2. Hide driver: adb shell /data/local/tmp/kernel_mem --hide
+          3. Use: adb shell /data/local/tmp/kernel_mem -p PID --read -a ADDR -s SIZE
+        
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        📚 Documentation
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        - README.md - Project overview
+        - README_KERNEL.md - Kernel version detailed docs
+        - QUICKSTART.md - Quick start guide
+        - INTEGRATION_GUIDE.md - Integration guide
+        
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        ⚠️  Important Notes
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        - For educational and research purposes only
+        - Requires root access
+        - Kernel version requires rwProcMem33 driver
+        - Test on development devices first
+        
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        🙏 Credits
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        - rwProcMem33: https://github.com/abcz316/rwProcMem33
+        - SKRoot Lite: https://github.com/abcz316/SKRoot-linuxKernelRoot
+        
+        Built with ❤️ by 虎虎大王 & 宝宝 (Kiro AI)
+        EOF
+    
+    - name: Upload Traditional Version (stealth_mem)
       uses: actions/upload-artifact@v4
       with:
-        name: stealth-mem-arm64-v8a
+        name: stealth_mem-arm64-v8a
+        path: |
+          outputs/arm64-v8a/stealth_mem
+          outputs/arm64-v8a/BUILD_INFO.txt
+        if-no-files-found: warn
+    
+    - name: Upload Kernel Version (kernel_mem)
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel_mem-arm64-v8a
+        path: |
+          outputs/arm64-v8a/kernel_mem
+          outputs/arm64-v8a/BUILD_INFO.txt
+        if-no-files-found: warn
+    
+    - name: Upload All Binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: proc-mem-inject-all-arm64-v8a
         path: outputs/arm64-v8a/
         if-no-files-found: warn

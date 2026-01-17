@@ -1,6 +1,22 @@
 # proc-mem-inject - 运行时内存注入工具
 
-**真正的无痕注入！**
+**真正的无痕注入！现在支持两种模式：**
+
+## 🚀 版本对比
+
+### 传统版本 (stealth_mem)
+- 基于 `/proc/pid/mem` 的用户态操作
+- 需要 SKRoot Lite 提供 root 权限
+- 适合快速测试和开发
+
+### 内核版本 (kernel_mem) ⭐ 推荐
+- 基于 rwProcMem33 驱动的**真正内核级操作**
+- 硬件级读写进程内存
+- 驱动级隐藏机制
+- Android 15 完美支持
+- **这是降维打击级别的技术升级！**
+
+详细对比请查看 [README_KERNEL.md](README_KERNEL.md)
 
 ## 特点
 
